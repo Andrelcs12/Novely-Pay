@@ -13,19 +13,96 @@ datasource db {
 }
 
 
-model Saas {
-  id String @id @default(cuid())
-  name String 
-  slug String @unique
-  apiKeyHash String @unique
-  asaasId String @unique
-  comissao Decimal @default(0.00)
-  isActive Boolean @default(true)
+// --- ENUMS PARA PADRONIZAÇÃO ---
 
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+enum SubscriptionCycle {
+  WEEKLY
+  BIWEEKLY
+  MONTHLY
+  BIMONTHLY
+  QUARTERLY
+  SEMIANNUALLY
+  YEARLY
+}
+
+enum BillingType {
+  BOLETO
+  CREDIT_CARD
+  PIX
+  UNDEFINED
+}
+
+enum SubscriptionStatus {
+  PENDING    // Aguardando primeiro pagamento
+  ACTIVE     // Tudo ok, acesso liberado
+  OVERDUE    // Pagamento atrasado
+  EXPIRED    // Assinatura vencida e não renovada
+  CANCELLED  // Cancelada pelo dono ou pelo SaaS
+}
+
+// --- MODELS ---
+
+model Saas {
+  id          String   @id @default(cuid())
+  name        String 
+  slug        String   @unique
+  apiKeyHash  String   @unique
+  asaasId     String   @unique
+  comissao    Decimal  @default(0.00)
+  isActive    Boolean  @default(true)
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  sellers     Seller[]
 
   @@map("saas")
+}
 
 
+model Seller {
+  id              String   @id @default(cuid())
+  name            String
+  email           String   @unique
+  cpfCnpj         String   @unique
+  mobilePhone     String
+  
+  // Identidade Financeira no Asaas
+  asaasCustomerId String?  @unique 
+
+  // Relacionamentos
+  saasId          String
+  saas            Saas           @relation(fields: [saasId], references: [id])
+  
+  // Um Seller pode ter várias assinaturas ao longo da vida (Histórico)
+  subscriptions   Subscription[]
+
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@map("sellers")
+}
+
+model Subscription {
+  id              String             @id @default(cuid())
+  asaasId          String             @unique 
+  
+  value            Decimal            @db.Decimal(10, 2)
+  cycle            SubscriptionCycle
+  billingType      BillingType
+  status           SubscriptionStatus @default(PENDING)
+  description      String?            @db.Text // <-- Adicionado para bater com o DTO
+  
+  nextDueDate      DateTime
+  endDate          DateTime?
+  
+  checkoutUrl      String?            @db.Text 
+  
+  sellerId         String
+  seller           Seller             @relation(fields: [sellerId], references: [id])
+
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
+
+  @@map("subscriptions")
 }
