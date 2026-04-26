@@ -13,8 +13,6 @@ datasource db {
 }
 
 
-// --- ENUMS PARA PADRONIZAÇÃO ---
-
 enum SubscriptionCycle {
   WEEKLY
   BIWEEKLY
@@ -33,18 +31,45 @@ enum BillingType {
 }
 
 enum SubscriptionStatus {
-  PENDING    // Aguardando primeiro pagamento
-  ACTIVE     // Tudo ok, acesso liberado
-  OVERDUE    // Pagamento atrasado
-  EXPIRED    // Assinatura vencida e não renovada
-  CANCELLED  // Cancelada pelo dono ou pelo SaaS
+  PENDING
+  ACTIVE
+  OVERDUE
+  EXPIRED
+  CANCELLED
 }
 
-// --- MODELS ---
+enum LedgerType {
+  PAYMENT
+  COMMISSION
+  SPLIT
+  REFUND
+  CASHOUT
+}
+
+enum LedgerDirection {
+  CREDIT
+  DEBIT
+}
+
+enum ReservationStatus {
+  PENDING
+  CONFIRMED
+  RELEASED
+  CANCELED
+}
+
+
+enum CashoutStatus {
+  PENDING
+  PROCESSING
+  PAID
+  FAILED
+}
+
 
 model Saas {
   id          String   @id @default(cuid())
-  name        String 
+  name        String
   slug        String   @unique
   apiKeyHash  String   @unique
   asaasId     String   @unique
@@ -55,10 +80,12 @@ model Saas {
   updatedAt   DateTime @updatedAt
 
   sellers     Seller[]
+  ledger      LedgerEntry[]
+  reservations Reservation[]
+  cashouts    Cashout[]   // 🔥 ADD
 
   @@map("saas")
 }
-
 
 model Seller {
   id              String   @id @default(cuid())
@@ -66,16 +93,19 @@ model Seller {
   email           String   @unique
   cpfCnpj         String   @unique
   mobilePhone     String
-  
-  // Identidade Financeira no Asaas
-  asaasCustomerId String?  @unique 
 
-  // Relacionamentos
+  asaasCustomerId String?  @unique
+
+  asaasWalletId   String?  @unique
+  asaasApiKey     String?  @db.Text
+
   saasId          String
-  saas            Saas           @relation(fields: [saasId], references: [id])
-  
-  // Um Seller pode ter várias assinaturas ao longo da vida (Histórico)
+  saas            Saas     @relation(fields: [saasId], references: [id])
+
   subscriptions   Subscription[]
+  ledger          LedgerEntry[]
+  reservations    Reservation[]
+  cashouts        Cashout[]   // 🔥 ADD
 
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
@@ -83,26 +113,173 @@ model Seller {
   @@map("sellers")
 }
 
+
 model Subscription {
   id              String             @id @default(cuid())
-  asaasId          String             @unique 
-  
-  value            Decimal            @db.Decimal(10, 2)
-  cycle            SubscriptionCycle
-  billingType      BillingType
-  status           SubscriptionStatus @default(PENDING)
-  description      String?            @db.Text // <-- Adicionado para bater com o DTO
-  
-  nextDueDate      DateTime
-  endDate          DateTime?
-  
-  checkoutUrl      String?            @db.Text 
-  
-  sellerId         String
-  seller           Seller             @relation(fields: [sellerId], references: [id])
+  asaasId         String             @unique
 
-  createdAt        DateTime           @default(now())
-  updatedAt        DateTime           @updatedAt
+  value           Decimal            @db.Decimal(10, 2)
+  cycle           SubscriptionCycle
+  billingType     BillingType
+  status          SubscriptionStatus @default(PENDING)
+
+  description     String?            @db.Text
+
+  nextDueDate     DateTime
+  endDate         DateTime?
+
+  maxPayments     Int?
+  externalRef     String?
+
+  checkoutUrl     String?            @db.Text
+
+  sellerId        String
+  seller          Seller             @relation(fields: [sellerId], references: [id])
+
+  payments        Payment[]
+  ledger          LedgerEntry[]
+  reservations    Reservation[]
+
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
 
   @@map("subscriptions")
+}
+
+
+model Payment {
+  id              String   @id @default(cuid())
+
+  asaasPaymentId  String   @unique
+
+  value           Decimal  @db.Decimal(10,2)
+  netValue        Decimal? @db.Decimal(10,2)
+
+  billingType     BillingType
+  status          String
+
+  dueDate         DateTime
+  paidAt          DateTime?
+
+  invoiceUrl      String?  @db.Text
+
+  subscriptionId  String
+  subscription    Subscription @relation(fields: [subscriptionId], references: [id])
+
+  ledger          LedgerEntry[]
+  reservation     Reservation?
+
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@map("payments")
+}
+
+model WebhookEvent {
+  id          String   @id @default(cuid())
+
+  event       String
+  asaasId     String?
+
+  payload     Json
+
+  processed   Boolean  @default(false)
+
+  createdAt   DateTime @default(now())
+
+  @@map("webhook_events")
+}
+
+
+model LedgerEntry {
+  id              String   @id @default(cuid())
+
+  saasId          String?
+  sellerId        String?
+  subscriptionId  String?
+  paymentId       String?
+
+  type            LedgerType
+  direction       LedgerDirection
+
+  amount          Decimal  @db.Decimal(10,2)
+
+  description     String?
+
+  createdAt       DateTime @default(now())
+
+  saas            Saas?         @relation(fields: [saasId], references: [id])
+  seller          Seller?       @relation(fields: [sellerId], references: [id])
+  subscription    Subscription? @relation(fields: [subscriptionId], references: [id])
+  payment         Payment?      @relation(fields: [paymentId], references: [id])
+
+  @@index([saasId])
+  @@index([sellerId])
+  @@index([paymentId])
+  @@index([subscriptionId])
+
+  @@map("ledger_entries")
+}
+
+
+model Reservation {
+  id String @id @default(cuid())
+
+  saasId String
+  sellerId String
+  subscriptionId String?
+  paymentId String @unique
+
+  grossAmount Decimal @db.Decimal(10,2)
+
+  platformFee Decimal @db.Decimal(10,2)
+  saasAmount Decimal @db.Decimal(10,2)
+
+  isConsumed Boolean @default(false)
+consumedAt DateTime?
+
+  status ReservationStatus @default(PENDING)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  saas Saas @relation(fields: [saasId], references: [id])
+  seller Seller @relation(fields: [sellerId], references: [id])
+  subscription Subscription? @relation(fields: [subscriptionId], references: [id])
+  payment Payment @relation(fields: [paymentId], references: [id])
+
+  @@index([saasId])
+  @@index([sellerId])
+  @@index([paymentId])
+  @@index([subscriptionId])
+}
+
+
+model Cashout {
+  id String @id @default(cuid())
+
+  saasId String
+  sellerId String
+
+  amount Decimal @db.Decimal(10,2)
+  status CashoutStatus @default(PENDING)
+
+  externalId String?
+  errorMessage String? @db.Text
+
+  processedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  saas Saas @relation(fields: [saasId], references: [id])
+  seller Seller @relation(fields: [sellerId], references: [id])
+
+  @@index([saasId])
+  @@index([sellerId, status])
+}
+
+model CashoutLock {
+  sellerId String @id
+  lockedAt DateTime
 }
